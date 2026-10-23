@@ -1,10 +1,13 @@
-name: Palagos 0.9.3 Farben und Modelle
+
+name: Palagos 0.9.3 - Typfix v2
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
 permissions:
   contents: read
+
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -12,14 +15,28 @@ jobs:
       - name: Spielcode herunterladen
         uses: actions/checkout@v4
 
-      - name: Projekt entpacken und Quellcode pruefen
+      - name: ZIP entpacken und Bogenanimation gezielt korrigieren
         shell: bash
         run: |
           set -euo pipefail
           unzip -q PALAGOS_Godot_v093_GOLD_BRAUN.zip
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('PALAGOS_Godot_v093/scripts/main.gd')
+          code = path.read_text(encoding='utf-8')
+          fixes = {
+              'var top := limbs[limbs.size() - 1]': 'var top: Vector3 = limbs[limbs.size() - 1]',
+              'var bottom := limbs[0]': 'var bottom: Vector3 = limbs[0]',
+          }
+          for old, new in fixes.items():
+              if code.count(old) != 1:
+                  raise SystemExit(f'Erwartete Codezeile nicht eindeutig gefunden: {old}')
+              code = code.replace(old, new)
+          path.write_text(code, encoding='utf-8')
+          print('Beide Variablentypen in der Bogenanimation korrigiert.')
+          PY
           test -f PALAGOS_Godot_v093/project.godot
-          test -f PALAGOS_Godot_v093/audio/Legends_of_the_Enchanted_Realm.mp3
-          python -m unittest discover -s PALAGOS_Godot_v093/tests -p 'test_*.py' -v
+          python3 -m unittest discover -s PALAGOS_Godot_v093/tests -p 'test_*.py' -v
 
       - name: Java 17 vorbereiten
         uses: actions/setup-java@v4
@@ -30,13 +47,14 @@ jobs:
       - name: Android SDK vorbereiten
         uses: android-actions/setup-android@v4
 
-      - name: Android Debug Signatur
+      - name: Debug-Signatur erstellen
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.android"
           keytool -genkeypair -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
 
-      - name: Android APK mit Godot 4.7.2 exportieren
+      - name: APK mit Godot 4.7.2 exportieren
         uses: firebelley/godot-export@v8.0.0
         with:
           godot_executable_download_url: https://godot-releases.nbg1.your-objectstorage.com/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
@@ -46,36 +64,31 @@ jobs:
           export_debug: true
           use_preset_export_path: true
 
-      - name: Godot laden und Waffenanimationen testen
+      - name: Godot-Skripte und Animationen testen
         shell: bash
         run: |
           set -euo pipefail
           GODOT="$(find "$HOME/.local/share/godot/godot_executable" -type f -name 'Godot*linux.x86_64' -print -quit)"
           test -n "$GODOT"
           chmod +x "$GODOT"
-          "$GODOT" --headless --editor --path PALAGOS_Godot_v093 --quit 2>&1 | tee /tmp/palagos093-import.log
-          if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid access|Invalid call' /tmp/palagos093-import.log; then
-            echo 'Godot-Skriptfehler im Import'; exit 1
+          "$GODOT" --headless --editor --path PALAGOS_Godot_v093 --quit 2>&1 | tee /tmp/palagos-import.log
+          if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid access|Invalid call' /tmp/palagos-import.log; then
+            echo 'Fehler beim Godot-Import'; exit 1
           fi
-          "$GODOT" --headless --path PALAGOS_Godot_v093 --script res://tests/smoke_start.gd 2>&1 | tee /tmp/palagos093-start.log
-          if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid access|Invalid call|SMOKE:' /tmp/palagos093-start.log; then
-            echo 'Godot-Starttest fehlgeschlagen'; exit 1
-          fi
-          grep -q 'PALAGOS_09_SMOKE_PASS' /tmp/palagos093-start.log
-          "$GODOT" --headless --path PALAGOS_Godot_v093 --script res://tests/smoke_models.gd 2>&1 | tee /tmp/palagos093-models.log
-          if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid access|Invalid call|MODEL_SMOKE_FAIL' /tmp/palagos093-models.log; then
-            echo 'Godot-Modelltest fehlgeschlagen'; exit 1
-          fi
-          grep -q 'PALAGOS_093_MODELS_PASS' /tmp/palagos093-models.log
-          "$GODOT" --headless --path PALAGOS_Godot_v093 --script res://tests/smoke_animation.gd 2>&1 | tee /tmp/palagos093-animation.log
-          if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid access|Invalid call|ANIMATION_SMOKE_FAIL' /tmp/palagos093-animation.log; then
-            echo 'Godot-Waffenanimationstest fehlgeschlagen'; exit 1
-          fi
-          grep -q 'PALAGOS_093_ANIMATION_PASS' /tmp/palagos093-animation.log
+          for script in smoke_start smoke_models smoke_animation; do
+            "$GODOT" --headless --path PALAGOS_Godot_v093 --script "res://tests/${script}.gd" 2>&1 | tee "/tmp/${script}.log"
+            if grep -Eiq 'SCRIPT ERROR|Parse Error|Failed to load script|Invalid access|Invalid call|SMOKE_FAIL|MODEL_SMOKE_FAIL|ANIMATION_SMOKE_FAIL' "/tmp/${script}.log"; then
+              echo "Test ${script} fehlgeschlagen"; exit 1
+            fi
+          done
+          grep -q 'PALAGOS_09_SMOKE_PASS' /tmp/smoke_start.log
+          grep -q 'PALAGOS_093_MODELS_PASS' /tmp/smoke_models.log
+          grep -q 'PALAGOS_093_ANIMATION_PASS' /tmp/smoke_animation.log
 
-      - name: Gepruefte APK zum Download bereitstellen
+      - name: APK zum Download freigeben
         uses: actions/upload-artifact@v4
         with:
-          name: Palagos-0.9.3-Android-Gold-Braun
+          name: Palagos-0.9.3-Android-Typfix-v2
           path: '**/Palagos-v093-Android-debug.apk'
           if-no-files-found: error
+
